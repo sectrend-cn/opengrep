@@ -442,6 +442,21 @@ jobs:
         shell: bash
         run: opengrep/opengrep.exe scan -f tests/windows/rules.yml tests/windows/test.py
 
+      # The targets file is written with CRLF line endings and blank lines,
+      # as a file edited with Notepad would be.
+      - name: targets-file test
+        env:
+          BASH_ENV: ${{ github.workspace }}/bash_env.sh
+        shell: bash
+        run: |
+          printf 'tests/windows/test.py\r\n\r\n   \r\n' > targets.txt
+          OUTPUT=$(opengrep/opengrep.exe scan --json --targets-file targets.txt -f tests/windows/rules.yml)
+          echo "$OUTPUT"
+          if ! echo "$OUTPUT" | grep -q '"scanned":\[.tests/windows/test.py.\]'; then
+            echo "targets-file test failed: only the listed target must be scanned"
+            exit 1
+          fi
+
       - name: sarif output test
         env:
           BASH_ENV: ${{ github.workspace }}/bash_env.sh
