@@ -886,12 +886,30 @@ let o_target_roots : string list Term.t =
   in
   Arg.value
     (Arg.pos_all Arg.string
-       (default.target_roots |> List_.map Scanning_root.to_string)
+       (* The default of the current working directory is restored in
+          cmdline_term rather than here, so that --targets-file alone
+          can select no target at all when its file is empty. *)
+       []
        info)
 
 (* ------------------------------------------------------------------ *)
 (* !!NEW arguments!! not in pysemgrep *)
 (* ------------------------------------------------------------------ *)
+
+(* coupling: with pysemgrep, a very large number of targets given on the
+ * command line may exceed the operating system's limit on the size of
+ * the command line; this option is the escape hatch. *)
+let o_targets_file : string option Term.t =
+  let info =
+    Arg.info [ "targets-file" ] ~docv:"FILE"
+      ~doc:
+        {|Read the paths of the files or folders to scan from $FILE, with
+          one path per line, in addition to the TARGETS given on the command
+          line. Blank lines are ignored. This allows passing a large number
+          of targets without hitting the command line length limit. An empty
+          file selects no target at all.|}
+  in
+  Arg.value (Arg.opt Arg.(some string) None info)
 
 let o_project_root : string option Term.t =
   let info =
@@ -1007,6 +1025,27 @@ let replace_target_roots_by_regular_files_where_needed (caps : < Cap.tmp >)
           "Implying --scan-unknown-extensions due to explicit targets being \
            stdin or named pipes");
   (target_roots, !imply_always_select_explicit_targets)
+
+(* The target roots read from the file passed to --targets-file, one path
+ * per line. Whitespace-only lines are ignored, so that the file may end
+ * with a newline and be edited on any platform (a trailing CR is stripped
+ * as whitespace). The resulting list may be empty: unlike the positional
+ * TARGETS, there is no fallback to the current working directory, for an
+ * empty list of targets is a meaningful result, e.g. the empty list of
+ * files changed by a commit. *)
+let targets_of_targets_file (filename : string) : string list =
+  match UFile.read_file (Fpath.v filename) with
+  | exception Unix.Unix_error (err, _fn, arg) ->
+      raise
+        (Error.Semgrep_error
+           ( spf "cannot read the file given to --targets-file: %s: %s" arg
+               (Unix.error_message err),
+             Some (Exit_code.fatal ~__LOC__) ))
+  | content ->
+      content
+      |> String.split_on_char '\n'
+      |> List_.map String.trim
+      |> List.filter (fun line -> line <> "")
 
 (*****************************************************************************)
 (* Subconf helpers *)
@@ -1257,7 +1296,7 @@ let cmdline_term caps ~allow_empty_config : conf Term.t =
       effect_guards replacement rewrite_rule_ids sarif sarif_outputs
       scan_unknown_extensions semgrepignore_filename severity show_supported_languages
       skin skip_invalid_configs
-      strict target_roots test text text_outputs time_flag timeout
+      strict target_roots targets_file test text text_outputs time_flag timeout
       timeout_interfile timeout_threshold
       (*  trace trace_endpoint *) use_git
       validate version vim vim_outputs
@@ -1276,6 +1315,15 @@ let cmdline_term caps ~allow_empty_config : conf Term.t =
       Engine_config.custom_ignore_pattern = opengrep_ignore_pattern;
     } in
 
+    let target_roots =
+      match (targets_file, target_roots) with
+      | None, [] ->
+          (* no TARGETS and no --targets-file: scan the whole current
+           * working directory, as documented *)
+          default.target_roots |> List_.map Scanning_root.to_string
+      | None, roots -> roots
+      | Some file, roots -> roots @ targets_of_targets_file file
+    in
     let target_roots, imply_always_select_explicit_targets =
       replace_target_roots_by_regular_files_where_needed caps target_roots
     in
@@ -1515,7 +1563,7 @@ let cmdline_term caps ~allow_empty_config : conf Term.t =
     $ o_rewrite_rule_ids $ o_sarif $ o_sarif_outputs $ o_scan_unknown_extensions
     $ o_semgrepignore_filename $ o_severity $ o_show_supported_languages
     $ Skin_CLI.o_skin $ o_skip_invalid_configs $ o_strict
-    $ o_target_roots $ o_test $ o_text
+    $ o_target_roots $ o_targets_file $ o_test $ o_text
     $ o_text_outputs $ o_time $ o_timeout $ o_timeout_interfile
     $ o_timeout_threshold $ (* o_trace $ o_trace_endpoint $ *) o_use_git $ o_validate
     $ o_version $ o_vim $ o_vim_outputs

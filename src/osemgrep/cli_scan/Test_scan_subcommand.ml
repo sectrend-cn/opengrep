@@ -3558,6 +3558,111 @@ let test_legacy_trace_through_call (caps : Scan_subcommand.caps) () =
   print_string (scan_through_call caps [])
 
 (*****************************************************************************)
+(* --targets-file *)
+(*****************************************************************************)
+
+(* the roots read from the file passed to --targets-file replace the default
+ * current-directory root: only the listed files are scanned *)
+let test_targets_file (caps : Scan_subcommand.caps) () =
+  with_env_app_token (fun () ->
+      let repo_files =
+        [
+          F.File ("rules.yml", eqeq_basic_content);
+          F.File ("stupid.py", stupid_py_content);
+          F.File ("target.py", stupid_py_content);
+          (* blank lines, surrounding spaces, trailing newline, and a CR
+           * must all be tolerated *)
+          F.File ("targets.txt", "stupid.py\r\n\n   \n  target.py  \n");
+        ]
+      in
+      Testutil_git.with_git_repo repo_files (fun _cwd ->
+          let exit_code, stdout_output =
+            Testo.with_capture stdout (fun () ->
+                without_settings (fun () ->
+                    Scan_subcommand.main caps
+                      [|
+                        "opengrep-scan"; "--json"; "--config"; "rules.yml";
+                        "--targets-file"; "targets.txt"
+                      |]))
+          in
+          Exit_code.Check.ok exit_code;
+          let out = Semgrep_output_v1_j.cli_output_of_string stdout_output in
+          Alcotest.(check (list string))
+            "only the targets read from the file were scanned"
+            [ "stupid.py"; "target.py" ]
+            (out.paths.scanned |> List_.map Fpath.to_string |> List.sort compare);
+          Alcotest.(check int) "a finding in each listed file" 2
+            (List.length out.results)))
+
+(* the roots read from the file are scanned in addition to the TARGETS
+ * given on the command line *)
+let test_targets_file_and_positional (caps : Scan_subcommand.caps) () =
+  with_env_app_token (fun () ->
+      let repo_files =
+        [
+          F.File ("rules.yml", eqeq_basic_content);
+          F.File ("stupid.py", stupid_py_content);
+          F.File ("target.py", stupid_py_content);
+          F.File ("targets.txt", "stupid.py\n");
+        ]
+      in
+      Testutil_git.with_git_repo repo_files (fun _cwd ->
+          let exit_code, stdout_output =
+            Testo.with_capture stdout (fun () ->
+                without_settings (fun () ->
+                    Scan_subcommand.main caps
+                      [|
+                        "opengrep-scan"; "--json"; "--config"; "rules.yml";
+                        "--targets-file"; "targets.txt"; "target.py"
+                      |]))
+          in
+          Exit_code.Check.ok exit_code;
+          let out = Semgrep_output_v1_j.cli_output_of_string stdout_output in
+          Alcotest.(check (list string))
+            "both the file's and the command line's targets were scanned"
+            [ "stupid.py"; "target.py" ]
+            (out.paths.scanned |> List_.map Fpath.to_string |> List.sort compare)))
+
+(* an empty targets file selects no target at all: it must not fall back
+ * on the default current-directory root *)
+let test_targets_file_empty (caps : Scan_subcommand.caps) () =
+  with_env_app_token (fun () ->
+      let repo_files =
+        [
+          F.File ("rules.yml", eqeq_basic_content);
+          F.File ("stupid.py", stupid_py_content);
+          F.File ("targets.txt", "\n   \n");
+        ]
+      in
+      Testutil_git.with_git_repo repo_files (fun _cwd ->
+          let exit_code, stdout_output =
+            Testo.with_capture stdout (fun () ->
+                without_settings (fun () ->
+                    Scan_subcommand.main caps
+                      [|
+                        "opengrep-scan"; "--json"; "--config"; "rules.yml";
+                        "--targets-file"; "targets.txt"
+                      |]))
+          in
+          Exit_code.Check.ok exit_code;
+          let out = Semgrep_output_v1_j.cli_output_of_string stdout_output in
+          Alcotest.(check (list string)) "nothing scanned" []
+            (out.paths.scanned |> List_.map Fpath.to_string);
+          Alcotest.(check int) "no findings" 0 (List.length out.results)))
+
+(* a targets file that cannot be read is a fatal error *)
+let test_targets_file_missing (caps : Scan_subcommand.caps) () =
+  match
+    scan_roots caps ~format_args:[ "--targets-file"; "nope.txt" ] []
+  with
+  | exception Error.Semgrep_error (msg, Some exit_code) ->
+      Exit_code.Check.fatal exit_code;
+      Alcotest.(check bool) "the error message names the file" true
+        (String.starts_with
+           ~prefix:"cannot read the file given to --targets-file: nope.txt" msg)
+  | _ -> Alcotest.fail "expected the scan to abort"
+
+(*****************************************************************************)
 (* Entry point *)
 (*****************************************************************************)
 
@@ -3766,6 +3871,14 @@ let tests (caps : < Scan_subcommand.caps >) =
         (test_missing_roots_text caps);
       t "missing scanning roots: fatal error with --test"
         (test_missing_roots_test_mode caps);
+      t "scan of the targets read from --targets-file"
+        (test_targets_file caps);
+      t "scan of --targets-file targets and command line targets"
+        (test_targets_file_and_positional caps);
+      t "empty --targets-file selects no target"
+        (test_targets_file_empty caps);
+      t "unreadable --targets-file is a fatal error"
+        (test_targets_file_missing caps);
       (* The text output of a scan of a directory, with colour.
          python: test_terminal_output *)
       t "text output of a directory scan" ~checked_output:(Testo.split_stdout_stderr ())
