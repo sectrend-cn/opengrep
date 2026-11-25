@@ -452,7 +452,7 @@ jobs:
           printf 'tests/windows/test.py\r\n\r\n   \r\n' > targets.txt
           OUTPUT=$(opengrep/opengrep.exe scan --json --targets-file targets.txt -f tests/windows/rules.yml)
           echo "$OUTPUT"
-          if ! echo "$OUTPUT" | grep -q '"scanned":\[.tests/windows/test.py.\]'; then
+          if ! echo "$OUTPUT" | grep -q '"scanned":\["[^"]*test\.py"\]'; then
             echo "targets-file test failed: only the listed target must be scanned"
             exit 1
           fi
